@@ -1,0 +1,30 @@
+## package.json
+
+```json
+{
+  "name": "minecraft-bot",
+  "version": "1.0.0",
+  "main": "alphaBot.js",
+  "scripts": {
+    "start": "node alphaBot.js",
+    "start:lumberjack": "node alphaBot.js",
+    "start:gp": "node bot.js",
+    "start:alpha": "node alphaBot.js",
+    "start:bravo": "node bravoBot.js",
+    "start:charlie": "node charlieBot.js",
+    "start:delta": "node deltaBot.js",
+    "start:all": "start cmd /k node bot.js && start cmd /k node bravoBot.js && start cmd /k node charlieBot.js && start cmd /k node alphaBot.js && start cmd /k node deltaBot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "mineflayer": "^4.35.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "ollama": "^0.6.3"
+  }
+}
+```
+
