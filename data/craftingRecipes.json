@@ -1,5 +1,96 @@
 {
   "items": {
+    "oak_planks": {
+      "displayName": "Oak Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "oak_log", "count": 1 }
+      ]
+    },
+    "spruce_planks": {
+      "displayName": "Spruce Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "spruce_log", "count": 1 }
+      ]
+    },
+    "birch_planks": {
+      "displayName": "Birch Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "birch_log", "count": 1 }
+      ]
+    },
+    "jungle_planks": {
+      "displayName": "Jungle Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "jungle_log", "count": 1 }
+      ]
+    },
+    "acacia_planks": {
+      "displayName": "Acacia Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "acacia_log", "count": 1 }
+      ]
+    },
+    "dark_oak_planks": {
+      "displayName": "Dark Oak Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "dark_oak_log", "count": 1 }
+      ]
+    },
+    "mangrove_planks": {
+      "displayName": "Mangrove Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "mangrove_log", "count": 1 }
+      ]
+    },
+    "cherry_planks": {
+      "displayName": "Cherry Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "cherry_log", "count": 1 }
+      ]
+    },
+    "crimson_planks": {
+      "displayName": "Crimson Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "crimson_stem", "count": 1 }
+      ]
+    },
+    "warped_planks": {
+      "displayName": "Warped Planks",
+      "category": "component",
+      "requiresTable": false,
+      "outputCount": 4,
+      "ingredients": [
+        { "item": "warped_stem", "count": 1 }
+      ]
+    },
+
     "stick": {
       "displayName": "Stick",
       "category": "component",

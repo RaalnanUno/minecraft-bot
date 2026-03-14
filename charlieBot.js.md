@@ -46,7 +46,7 @@ const BRAVO_PROTECT_DISTANCE = 3
 const bot = mineflayer.createBot({
   host: 'localhost',
   port: 25565,
-  username: 'GathererBot',
+  username: 'CharlieBot',
   auth: 'offline'
 })
 
@@ -538,6 +538,24 @@ async function runAutonomyTick() {
   }
 }
 
+bot.on('chat', async (username, message) => {
+  if (username === bot.username) return
+
+  const msg = message.toLowerCase().trim()
+  const botName = bot.username.toLowerCase()
+
+  if (msg === 'all drop') {
+    await dropAllInventory(bot)
+    return
+  }
+
+  if (msg === `${botName} drop`) {
+    await dropAllInventory(bot)
+    return
+  }
+})
+
+
 async function runCommandTask(mode, reason, runner) {
   interruptCurrentTask(reason)
   await sleep(100)
@@ -755,7 +773,7 @@ async function handleCommand(username, prompt) {
 }
 
 bot.on('spawn', () => {
-  console.log('GathererBot joined the world!')
+  console.log('CharlieBot joined the world!')
 
   const defaultMoves = new Movements(bot)
   bot.pathfinder.setMovements(defaultMoves)

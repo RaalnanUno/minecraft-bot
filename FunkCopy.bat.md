@@ -1,0 +1,6 @@
+## FunkCopy.bat
+
+```text
+XCopy "C:\MinecraftServer\minecraft-bot\*.*" "F:\MinecraftServer\minecraft-bot\" /C /D /S /Y
+```
+

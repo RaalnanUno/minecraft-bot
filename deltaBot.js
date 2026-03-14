@@ -44,7 +44,7 @@ const bot = mineflayer.createBot({
 bot.loadPlugin(pathfinder)
 
 const state = {
-  mode: 'idle', // idle | moving | mining | collecting | fighting | chatting | crafting | auto_follow_alpha | auto_engage | auto_mine | rally
+  mode: 'idle', // idle | moving | mining | collecting | fighting | chatting | crafting | auto_follow_alpha | auto_engage | auto_mine | rally | reporting
   cancelRequested: false,
   leaderName: null,
   autoLoopRunning: false,
@@ -211,11 +211,27 @@ function normalizeRecipeKey(name) {
     .replace(/\s+/g, '_')
 }
 
+function applyBuiltInRecipeAliases(normalized) {
+  const fallbackAliases = {
+    pickaxe: 'wooden_pickaxe',
+    axe: 'wooden_axe',
+    shovel: 'wooden_shovel',
+    sword: 'wooden_sword',
+    hoe: 'wooden_hoe'
+  }
+
+  return fallbackAliases[normalized] || normalized
+}
+
+
 function resolveRecipeName(name) {
   const craftingData = getCraftingData()
-  const normalized = normalizeRecipeKey(name)
+  let normalized = normalizeRecipeKey(name)
 
   if (!normalized) return null
+
+  normalized = applyBuiltInRecipeAliases(normalized)
+
   if (craftingData.items[normalized]) return normalized
 
   const aliasTarget = craftingData.aliases[normalized]
@@ -234,6 +250,13 @@ function getRecipe(recipeName) {
 function getRecipeItemId(itemName) {
   const item = bot.registry.itemsByName[itemName]
   return item ? item.id : null
+}
+
+function getItemCount(botRef, itemName) {
+  return botRef.inventory
+    .items()
+    .filter(item => item.name === itemName)
+    .reduce((sum, item) => sum + item.count, 0)
 }
 
 function getItemCountExact(itemName) {
@@ -262,6 +285,170 @@ function getInventoryCountForRequirement(name) {
   return getItemCountExact(name)
 }
 
+function getAnyLogName(botRef) {
+  const preferredFromGroup = getGroupMembers('logs')
+  const fallbackLogs = [
+    'oak_log',
+    'spruce_log',
+    'birch_log',
+    'jungle_log',
+    'acacia_log',
+    'dark_oak_log',
+    'mangrove_log',
+    'cherry_log',
+    'crimson_stem',
+    'warped_stem'
+  ]
+
+  const logNames = preferredFromGroup.length > 0 ? preferredFromGroup : fallbackLogs
+
+  for (const logName of logNames) {
+    if (getItemCount(botRef, logName) > 0) {
+      return logName
+    }
+  }
+
+  return null
+}
+
+function getPlankNameFromLogName(logName) {
+  if (!logName) return null
+  return logName.replace('_log', '_planks').replace('_stem', '_planks')
+}
+
+async function craftPlanksFromInventoryLogs(botRef) {
+  const logName = getAnyLogName(botRef)
+
+  if (!logName) {
+    return false
+  }
+
+  const plankName = getPlankNameFromLogName(logName)
+  const plankItem = botRef.registry.itemsByName[plankName]
+
+  if (!plankItem) {
+    botRef.chat(`I do not know the item data for ${plankName}.`)
+    return false
+  }
+
+  const recipes = botRef.recipesFor(plankItem.id, null, 1, null)
+
+  if (!recipes || recipes.length === 0) {
+    botRef.chat(`I could not find a recipe for ${plankName}.`)
+    return false
+  }
+
+  await botRef.craft(recipes[0], 1, null)
+  botRef.chat(`Crafted ${plankName}.`)
+  return true
+}
+
+async function gatherAndCraftAnyPlanks(shouldCancel = () => false, announce = true) {
+  if (shouldCancel()) {
+    return {
+      success: false,
+      reason: 'canceled'
+    }
+  }
+
+  const hadLogs = !!getFirstAvailableLogName()
+
+  if (!hadLogs) {
+    if (announce) {
+      bot.chat('I need wood first. Cutting a tree.')
+    }
+
+    const cutResult = await cutTree(bot, {
+      shouldCancel,
+      autoHarvest: true,
+      announce
+    })
+
+    if (cutResult.canceled) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    if ((cutResult.cutCount || 0) <= 0) {
+      return {
+        success: false,
+        reason: 'tree_gather_failed'
+      }
+    }
+  }
+
+  const logName = getFirstAvailableLogName()
+  if (!logName) {
+    return {
+      success: false,
+      reason: 'no_logs_after_gather'
+    }
+  }
+
+  const plankName = getPlankNameFromLogName(logName)
+
+  try {
+    if (announce) {
+      bot.chat(`Converting ${logName} into planks.`)
+    }
+
+    await craftItemByMinecraftRecipe(plankName, 1, null)
+    await sleep(250)
+
+    return {
+      success: true,
+      reason: 'completed',
+      craftedItem: plankName
+    }
+  } catch (err) {
+    return {
+      success: false,
+      reason: `minecraft_craft_failed:${err.message}`
+    }
+  }
+}
+
+
+async function ensurePlanks(botRef, requiredCount = 1) {
+  const plankNamesFromGroup = getGroupMembers('planks')
+  const fallbackPlanks = [
+    'oak_planks',
+    'spruce_planks',
+    'birch_planks',
+    'jungle_planks',
+    'acacia_planks',
+    'dark_oak_planks',
+    'mangrove_planks',
+    'cherry_planks',
+    'crimson_planks',
+    'warped_planks'
+  ]
+
+  const plankNames = plankNamesFromGroup.length > 0 ? plankNamesFromGroup : fallbackPlanks
+
+  const totalPlanks = plankNames.reduce((sum, plankName) => {
+    return sum + getItemCount(botRef, plankName)
+  }, 0)
+
+  if (totalPlanks >= requiredCount) {
+    return true
+  }
+
+  const crafted = await craftPlanksFromInventoryLogs(botRef)
+
+  if (!crafted) {
+    return false
+  }
+
+  const updatedPlanks = plankNames.reduce((sum, plankName) => {
+    return sum + getItemCount(botRef, plankName)
+  }, 0)
+
+  return updatedPlanks >= requiredCount
+}
+
 function getNearbyDroppedItems(maxDistance = 12) {
   return Object.values(bot.entities)
     .filter(entity => {
@@ -273,7 +460,21 @@ function getNearbyDroppedItems(maxDistance = 12) {
 }
 
 function hasNearbyTree(maxDistance = 24) {
-  const logNames = new Set(getGroupMembers('logs'))
+  const logGroup = getGroupMembers('logs')
+  const fallbackLogs = [
+    'oak_log',
+    'spruce_log',
+    'birch_log',
+    'jungle_log',
+    'acacia_log',
+    'dark_oak_log',
+    'mangrove_log',
+    'cherry_log',
+    'crimson_stem',
+    'warped_stem'
+  ]
+
+  const logNames = new Set(logGroup.length > 0 ? logGroup : fallbackLogs)
 
   const block = bot.findBlock({
     matching: block => !!block && logNames.has(block.name),
@@ -430,15 +631,7 @@ function getPreferredConcreteItemForRequirement(requirementName) {
 }
 
 function getFirstAvailableLogName() {
-  const logNames = getGroupMembers('logs')
-
-  for (const logName of logNames) {
-    if (getItemCountExact(logName) > 0) {
-      return logName
-    }
-  }
-
-  return null
+  return getAnyLogName(bot)
 }
 
 async function convertLogsToPlanksIfNeeded(requiredPlanks, options = {}) {
@@ -467,7 +660,7 @@ async function convertLogsToPlanksIfNeeded(requiredPlanks, options = {}) {
       break
     }
 
-    const plankName = logName.replace('_log', '_planks').replace('_stem', '_planks')
+    const plankName = getPlankNameFromLogName(logName)
 
     if (announce) {
       bot.chat(`Converting ${logName} into planks.`)
@@ -861,7 +1054,16 @@ async function craftRecipeByName(recipeName, options = {}) {
     }
   }
 
-  if (getItemCountExact(resolvedRecipeName) >= targetCount) {
+  if (resolvedRecipeName.endsWith('_planks')) {
+    const plankCount = getItemCountExact(resolvedRecipeName)
+    if (plankCount >= targetCount) {
+      return {
+        success: true,
+        reason: 'already_have_item',
+        craftedItem: resolvedRecipeName
+      }
+    }
+  } else if (getItemCountExact(resolvedRecipeName) >= targetCount) {
     return {
       success: true,
       reason: 'already_have_item',
@@ -948,7 +1150,8 @@ async function craftRecipeByName(recipeName, options = {}) {
 }
 
 async function tryCraftByUserRequest(requestedName, shouldCancel, announce = true) {
-  const resolvedRecipeName = resolveRecipeName(requestedName)
+  const normalizedRequestedName = applyBuiltInRecipeAliases(normalizeRecipeKey(requestedName))
+  const resolvedRecipeName = resolveRecipeName(normalizedRequestedName)
 
   if (!resolvedRecipeName) {
     const knownItems = Object.keys(getCraftingData().items)
@@ -960,6 +1163,18 @@ async function tryCraftByUserRequest(requestedName, shouldCancel, announce = tru
       reason: `unknown_recipe:${requestedName}`,
       message: `I do not know that recipe yet. Known recipes include: ${knownItems}.`
     }
+  }
+
+  if (
+    resolvedRecipeName === 'wooden_pickaxe' ||
+    resolvedRecipeName === 'wooden_axe' ||
+    resolvedRecipeName === 'wooden_shovel' ||
+    resolvedRecipeName === 'wooden_sword' ||
+    resolvedRecipeName === 'wooden_hoe' ||
+    resolvedRecipeName === 'stick' ||
+    resolvedRecipeName === 'crafting_table'
+  ) {
+    await ensurePlanks(bot, 1)
   }
 
   const result = await craftRecipeByName(resolvedRecipeName, {
@@ -1422,25 +1637,40 @@ async function handleCommand(username, prompt) {
     return
   }
 
-  if (normalized.startsWith('craft ')) {
-    const requestedItem = prompt.slice('craft '.length).trim()
+if (normalized.startsWith('craft ')) {
+  const requestedItem = prompt.slice('craft '.length).trim()
 
-    if (!requestedItem) {
-      bot.chat('Say something like: Delta craft wooden axe')
-      return
-    }
-
-    await runCommandTask('crafting', 'craft_command', async ({ shouldCancel }) => {
-      try {
-        const result = await tryCraftByUserRequest(requestedItem, shouldCancel, true)
-        bot.chat(result.message)
-      } catch (err) {
-        console.error('[Delta] Craft command error:', err)
-        bot.chat(`Delta had trouble crafting ${requestedItem}: ${err.message}`)
-      }
-    })
+  if (!requestedItem) {
+    bot.chat('Say something like: Delta craft wooden axe')
     return
   }
+
+  await runCommandTask('crafting', 'craft_command', async ({ shouldCancel }) => {
+    try {
+      const normalizedRequested = normalizeRecipeKey(requestedItem)
+
+      if (normalizedRequested === 'planks') {
+        const result = await gatherAndCraftAnyPlanks(shouldCancel, true)
+
+        if (!result.success) {
+          bot.chat(`Delta had trouble crafting planks. Reason: ${result.reason}.`)
+          return
+        }
+
+        bot.chat(`Craft complete: ${result.craftedItem}.`)
+        return
+      }
+
+      const result = await tryCraftByUserRequest(requestedItem, shouldCancel, true)
+      bot.chat(result.message)
+    } catch (err) {
+      console.error('[Delta] Craft command error:', err)
+      bot.chat(`Delta had trouble crafting ${requestedItem}: ${err.message}`)
+    }
+  })
+  return
+}
+
 
   await runCommandTask('chatting', 'chat_command', async ({ shouldCancel }) => {
     try {

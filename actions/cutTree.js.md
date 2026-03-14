@@ -366,11 +366,49 @@ async function digLogBlock(bot, block, shouldCancel) {
   return { success: true, reason: 'dug' }
 }
 
+function isAirLike(block) {
+  if (!block) return true
+  return block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air'
+}
+
+function isExposedLog(bot, block) {
+  if (!isLogBlock(block)) return false
+
+  const above = bot.blockAt(block.position.offset(0, 1, 0))
+  const north = bot.blockAt(block.position.offset(0, 0, -1))
+  const south = bot.blockAt(block.position.offset(0, 0, 1))
+  const east = bot.blockAt(block.position.offset(1, 0, 0))
+  const west = bot.blockAt(block.position.offset(-1, 0, 0))
+
+  const sideOpen =
+    isAirLike(north) ||
+    isAirLike(south) ||
+    isAirLike(east) ||
+    isAirLike(west)
+
+  const topOpen = isAirLike(above) || isLeafBlock(above)
+
+  return sideOpen || topOpen
+}
+
 function findNearbyLog(bot) {
-  return bot.findBlock({
+  const matches = bot.findBlocks({
     matching: block => isLogBlock(block),
-    maxDistance: 24
+    maxDistance: 24,
+    count: 30
   })
+
+  const candidates = matches
+    .map(position => bot.blockAt(position))
+    .filter(block => isLogBlock(block))
+    .filter(block => isExposedLog(bot, block))
+    .sort((a, b) => {
+      const da = bot.entity.position.distanceTo(a.position)
+      const db = bot.entity.position.distanceTo(b.position)
+      return da - db
+    })
+
+  return candidates[0] || null
 }
 
 function getConnectedLogs(bot, firstBlock, maxBlocks = 48) {

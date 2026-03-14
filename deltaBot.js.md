@@ -1,7 +1,6 @@
 ## deltaBot.js
 
 ```js
-
 // Delta help
 // Delta recipe stick
 // Delta recipe diamond axe
@@ -15,7 +14,8 @@ const fs = require('fs')
 const path = require('path')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
-const { mineStone } = require('./actions/mineStone')
+const { mineMaterial } = require('./actions/mineMaterial')
+const { cutTree } = require('./actions/cutTree')
 const { collectNearbyDrops } = require('./actions/collectDrops')
 const { bootstrapFirstTool } = require('./actions/bootstrapFirstTool')
 const {
@@ -47,7 +47,7 @@ const bot = mineflayer.createBot({
 bot.loadPlugin(pathfinder)
 
 const state = {
-  mode: 'idle', // idle | moving | mining | collecting | fighting | chatting | crafting | auto_follow_alpha | auto_engage | auto_mine | rally
+  mode: 'idle', // idle | moving | mining | collecting | fighting | chatting | crafting | auto_follow_alpha | auto_engage | auto_mine | rally | reporting
   cancelRequested: false,
   leaderName: null,
   autoLoopRunning: false,
@@ -214,11 +214,27 @@ function normalizeRecipeKey(name) {
     .replace(/\s+/g, '_')
 }
 
+function applyBuiltInRecipeAliases(normalized) {
+  const fallbackAliases = {
+    pickaxe: 'wooden_pickaxe',
+    axe: 'wooden_axe',
+    shovel: 'wooden_shovel',
+    sword: 'wooden_sword',
+    hoe: 'wooden_hoe'
+  }
+
+  return fallbackAliases[normalized] || normalized
+}
+
+
 function resolveRecipeName(name) {
   const craftingData = getCraftingData()
-  const normalized = normalizeRecipeKey(name)
+  let normalized = normalizeRecipeKey(name)
 
   if (!normalized) return null
+
+  normalized = applyBuiltInRecipeAliases(normalized)
+
   if (craftingData.items[normalized]) return normalized
 
   const aliasTarget = craftingData.aliases[normalized]
@@ -239,11 +255,22 @@ function getRecipeItemId(itemName) {
   return item ? item.id : null
 }
 
+function getItemCount(botRef, itemName) {
+  return botRef.inventory
+    .items()
+    .filter(item => item.name === itemName)
+    .reduce((sum, item) => sum + item.count, 0)
+}
+
 function getItemCountExact(itemName) {
   return bot.inventory
     .items()
     .filter(item => item.name === itemName)
     .reduce((sum, item) => sum + item.count, 0)
+}
+
+function getItemByName(itemName) {
+  return bot.inventory.items().find(item => item.name === itemName) || null
 }
 
 function getGroupMembers(groupName) {
@@ -261,42 +288,243 @@ function getInventoryCountForRequirement(name) {
   return getItemCountExact(name)
 }
 
-function hasEnoughRequirement(name, requiredCount) {
-  return getInventoryCountForRequirement(name) >= requiredCount
-}
+function getAnyLogName(botRef) {
+  const preferredFromGroup = getGroupMembers('logs')
+  const fallbackLogs = [
+    'oak_log',
+    'spruce_log',
+    'birch_log',
+    'jungle_log',
+    'acacia_log',
+    'dark_oak_log',
+    'mangrove_log',
+    'cherry_log',
+    'crimson_stem',
+    'warped_stem'
+  ]
 
-function getMissingAmount(name, requiredCount) {
-  return Math.max(0, requiredCount - getInventoryCountForRequirement(name))
-}
+  const logNames = preferredFromGroup.length > 0 ? preferredFromGroup : fallbackLogs
 
-function getInventorySummary() {
-  const items = bot.inventory.items()
-
-  if (!items || items.length === 0) {
-    return 'Delta inventory is empty.'
+  for (const logName of logNames) {
+    if (getItemCount(botRef, logName) > 0) {
+      return logName
+    }
   }
 
-  const summary = items
-    .slice(0, 8)
-    .map(item => `${item.name} x${item.count}`)
-    .join(', ')
-
-  if (items.length > 8) {
-    return `Delta has: ${summary}, and more.`
-  }
-
-  return `Delta has: ${summary}.`
+  return null
 }
 
-function getCraftSummary(recipeName) {
-  const recipe = getRecipe(recipeName)
-  if (!recipe) return null
+function getPlankNameFromLogName(logName) {
+  if (!logName) return null
+  return logName.replace('_log', '_planks').replace('_stem', '_planks')
+}
 
-  const ingredients = (recipe.ingredients || [])
-    .map(part => `${part.item} x${part.count}`)
-    .join(', ')
+async function craftPlanksFromInventoryLogs(botRef) {
+  const logName = getAnyLogName(botRef)
 
-  return `${recipeName}: ${ingredients || 'no ingredients listed'}`
+  if (!logName) {
+    return false
+  }
+
+  const plankName = getPlankNameFromLogName(logName)
+  const plankItem = botRef.registry.itemsByName[plankName]
+
+  if (!plankItem) {
+    botRef.chat(`I do not know the item data for ${plankName}.`)
+    return false
+  }
+
+  const recipes = botRef.recipesFor(plankItem.id, null, 1, null)
+
+  if (!recipes || recipes.length === 0) {
+    botRef.chat(`I could not find a recipe for ${plankName}.`)
+    return false
+  }
+
+  await botRef.craft(recipes[0], 1, null)
+  botRef.chat(`Crafted ${plankName}.`)
+  return true
+}
+
+async function gatherAndCraftAnyPlanks(shouldCancel = () => false, announce = true) {
+  if (shouldCancel()) {
+    return {
+      success: false,
+      reason: 'canceled'
+    }
+  }
+
+  const hadLogs = !!getFirstAvailableLogName()
+
+  if (!hadLogs) {
+    if (announce) {
+      bot.chat('I need wood first. Cutting a tree.')
+    }
+
+    const cutResult = await cutTree(bot, {
+      shouldCancel,
+      autoHarvest: true,
+      announce
+    })
+
+    if (cutResult.canceled) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    if ((cutResult.cutCount || 0) <= 0) {
+      return {
+        success: false,
+        reason: 'tree_gather_failed'
+      }
+    }
+  }
+
+  const logName = getFirstAvailableLogName()
+  if (!logName) {
+    return {
+      success: false,
+      reason: 'no_logs_after_gather'
+    }
+  }
+
+  const plankName = getPlankNameFromLogName(logName)
+
+  try {
+    if (announce) {
+      bot.chat(`Converting ${logName} into planks.`)
+    }
+
+    await craftItemByMinecraftRecipe(plankName, 1, null)
+    await sleep(250)
+
+    return {
+      success: true,
+      reason: 'completed',
+      craftedItem: plankName
+    }
+  } catch (err) {
+    return {
+      success: false,
+      reason: `minecraft_craft_failed:${err.message}`
+    }
+  }
+}
+
+
+async function ensurePlanks(botRef, requiredCount = 1) {
+  const plankNamesFromGroup = getGroupMembers('planks')
+  const fallbackPlanks = [
+    'oak_planks',
+    'spruce_planks',
+    'birch_planks',
+    'jungle_planks',
+    'acacia_planks',
+    'dark_oak_planks',
+    'mangrove_planks',
+    'cherry_planks',
+    'crimson_planks',
+    'warped_planks'
+  ]
+
+  const plankNames = plankNamesFromGroup.length > 0 ? plankNamesFromGroup : fallbackPlanks
+
+  const totalPlanks = plankNames.reduce((sum, plankName) => {
+    return sum + getItemCount(botRef, plankName)
+  }, 0)
+
+  if (totalPlanks >= requiredCount) {
+    return true
+  }
+
+  const crafted = await craftPlanksFromInventoryLogs(botRef)
+
+  if (!crafted) {
+    return false
+  }
+
+  const updatedPlanks = plankNames.reduce((sum, plankName) => {
+    return sum + getItemCount(botRef, plankName)
+  }, 0)
+
+  return updatedPlanks >= requiredCount
+}
+
+function getNearbyDroppedItems(maxDistance = 12) {
+  return Object.values(bot.entities)
+    .filter(entity => {
+      if (!entity) return false
+      if (!entity.position) return false
+      if (entity.name !== 'item') return false
+      return bot.entity.position.distanceTo(entity.position) <= maxDistance
+    })
+}
+
+function hasNearbyTree(maxDistance = 24) {
+  const logGroup = getGroupMembers('logs')
+  const fallbackLogs = [
+    'oak_log',
+    'spruce_log',
+    'birch_log',
+    'jungle_log',
+    'acacia_log',
+    'dark_oak_log',
+    'mangrove_log',
+    'cherry_log',
+    'crimson_stem',
+    'warped_stem'
+  ]
+
+  const logNames = new Set(logGroup.length > 0 ? logGroup : fallbackLogs)
+
+  const block = bot.findBlock({
+    matching: block => !!block && logNames.has(block.name),
+    maxDistance
+  })
+
+  return !!block
+}
+
+function hasNearbyStoneLike(maxDistance = 24) {
+  const block = bot.findBlock({
+    matching: block =>
+      !!block &&
+      ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(block.name),
+    maxDistance
+  })
+
+  return !!block
+}
+
+function describeNearbySourcesForRequirement(requirementName) {
+  if (requirementName === 'planks' || requirementName === 'logs') {
+    return {
+      canGather: hasNearbyTree(24),
+      source: 'tree'
+    }
+  }
+
+  if (requirementName === 'cobblestone' || requirementName === 'stone') {
+    return {
+      canGather: hasNearbyStoneLike(24),
+      source: 'stone'
+    }
+  }
+
+  return {
+    canGather: false,
+    source: null
+  }
+}
+
+function neededBlockCountFromRequirement(requirementName, missingCount) {
+  if (requirementName === 'planks') {
+    return Math.ceil(missingCount / 4)
+  }
+
+  return missingCount
 }
 
 function findNearbyCraftingTable(maxDistance = 8) {
@@ -304,10 +532,6 @@ function findNearbyCraftingTable(maxDistance = 8) {
     matching: block => block && block.name === 'crafting_table',
     maxDistance
   })
-}
-
-function getItemByName(itemName) {
-  return bot.inventory.items().find(item => item.name === itemName) || null
 }
 
 async function moveNearBlock(block, distance = 2) {
@@ -366,38 +590,6 @@ async function placeCraftingTable() {
   return placed
 }
 
-async function ensureCraftingTableAccess(shouldCancel = () => false, announce = true) {
-  if (shouldCancel()) {
-    throw new Error('Craft canceled')
-  }
-
-  let tableBlock = findNearbyCraftingTable(8)
-  if (tableBlock) {
-    await moveNearBlock(tableBlock, 2)
-    return tableBlock
-  }
-
-  if (getItemCountExact('crafting_table') <= 0) {
-    const craftResult = await craftRecipeByName('crafting_table', {
-      shouldCancel,
-      announce,
-      depth: 0
-    })
-
-    if (!craftResult.success) {
-      throw new Error(`Could not craft crafting table: ${craftResult.reason}`)
-    }
-  }
-
-  if (announce) {
-    bot.chat('Placing crafting table.')
-  }
-
-  tableBlock = await placeCraftingTable()
-  await moveNearBlock(tableBlock, 2)
-  return tableBlock
-}
-
 async function craftItemByMinecraftRecipe(itemName, count = 1, craftingTableBlock = null) {
   const itemId = getRecipeItemId(itemName)
   if (!itemId) {
@@ -441,52 +633,399 @@ function getPreferredConcreteItemForRequirement(requirementName) {
   return members[0] || requirementName
 }
 
-function listMissingLeafRequirements(recipeName, multiplier = 1, missing = []) {
-  const recipe = getRecipe(recipeName)
-  if (!recipe) return missing
-
-  for (const ingredient of recipe.ingredients || []) {
-    const totalRequired = ingredient.count * multiplier
-    const onHand = getInventoryCountForRequirement(ingredient.item)
-
-    if (onHand >= totalRequired) {
-      continue
-    }
-
-    const childRecipeName = resolveRecipeName(ingredient.item)
-    if (!childRecipeName) {
-      missing.push({
-        item: ingredient.item,
-        missing: totalRequired - onHand
-      })
-      continue
-    }
-
-    const childRecipe = getRecipe(childRecipeName)
-    const outputCount = childRecipe?.outputCount || 1
-    const neededCrafts = Math.ceil((totalRequired - onHand) / outputCount)
-
-    listMissingLeafRequirements(childRecipeName, neededCrafts, missing)
-  }
-
-  return missing
+function getFirstAvailableLogName() {
+  return getAnyLogName(bot)
 }
 
-function consolidateMissingItems(missingItems) {
-  const map = new Map()
+async function convertLogsToPlanksIfNeeded(requiredPlanks, options = {}) {
+  const shouldCancel = options.shouldCancel || (() => false)
+  const announce = options.announce !== false
 
-  for (const entry of missingItems) {
-    const current = map.get(entry.item) || 0
-    map.set(entry.item, current + entry.missing)
+  if (getInventoryCountForRequirement('planks') >= requiredPlanks) {
+    return {
+      success: true,
+      reason: 'already_have_planks'
+    }
   }
 
-  return Array.from(map.entries()).map(([item, missing]) => ({ item, missing }))
+  let craftedAny = false
+
+  while (getInventoryCountForRequirement('planks') < requiredPlanks) {
+    if (shouldCancel()) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    const logName = getFirstAvailableLogName()
+    if (!logName) {
+      break
+    }
+
+    const plankName = getPlankNameFromLogName(logName)
+
+    if (announce) {
+      bot.chat(`Converting ${logName} into planks.`)
+    }
+
+    try {
+      await craftItemByMinecraftRecipe(plankName, 1, null)
+      craftedAny = true
+      await sleep(250)
+    } catch (err) {
+      return {
+        success: false,
+        reason: `plank_conversion_failed:${err.message}`
+      }
+    }
+  }
+
+  if (getInventoryCountForRequirement('planks') >= requiredPlanks) {
+    return {
+      success: true,
+      reason: craftedAny ? 'converted_logs_to_planks' : 'already_have_planks'
+    }
+  }
+
+  return {
+    success: false,
+    reason: 'not_enough_logs_for_planks'
+  }
+}
+
+async function acquireLeafRequirement(requirementName, missingCount, options = {}) {
+  const shouldCancel = options.shouldCancel || (() => false)
+  const announce = options.announce !== false
+
+  if (shouldCancel()) {
+    return {
+      success: false,
+      reason: 'canceled'
+    }
+  }
+
+  if (requirementName === 'planks') {
+    const nearby = describeNearbySourcesForRequirement('planks')
+
+    if (!nearby.canGather) {
+      return {
+        success: false,
+        reason: 'no_nearby_tree'
+      }
+    }
+
+    if (announce) {
+      bot.chat(`I need ${missingCount} planks. Getting wood first.`)
+    }
+
+    const result = await cutTree(bot, {
+      shouldCancel,
+      autoHarvest: true,
+      announce
+    })
+
+    if (result.canceled) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    if ((result.cutCount || 0) <= 0) {
+      return {
+        success: false,
+        reason: 'tree_gather_failed'
+      }
+    }
+
+    const convertResult = await convertLogsToPlanksIfNeeded(missingCount, {
+      shouldCancel,
+      announce
+    })
+
+    if (!convertResult.success) {
+      return convertResult
+    }
+
+    return {
+      success: true,
+      reason: 'gathered_logs_for_planks'
+    }
+  }
+
+  if (requirementName === 'logs') {
+    const nearby = describeNearbySourcesForRequirement('logs')
+
+    if (!nearby.canGather) {
+      return {
+        success: false,
+        reason: 'no_nearby_tree'
+      }
+    }
+
+    if (announce) {
+      bot.chat(`I need ${missingCount} logs. Cutting a tree.`)
+    }
+
+    const result = await cutTree(bot, {
+      shouldCancel,
+      autoHarvest: true,
+      announce
+    })
+
+    if (result.canceled) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    if ((result.cutCount || 0) <= 0) {
+      return {
+        success: false,
+        reason: 'tree_gather_failed'
+      }
+    }
+
+    return {
+      success: true,
+      reason: 'gathered_logs'
+    }
+  }
+
+  if (requirementName === 'cobblestone' || requirementName === 'stone') {
+    const nearby = describeNearbySourcesForRequirement(requirementName)
+
+    if (!nearby.canGather) {
+      return {
+        success: false,
+        reason: 'no_nearby_stone'
+      }
+    }
+
+    if (announce) {
+      bot.chat(`I need ${missingCount} ${requirementName}. Mining stone.`)
+    }
+
+    const mineTarget = requirementName === 'cobblestone' ? 'stone' : requirementName
+
+    const result = await mineMaterial(bot, mineTarget, {
+      shouldCancel,
+      autoHarvest: true,
+      announce,
+      maxBlocks: Math.max(neededBlockCountFromRequirement(requirementName, missingCount), 3),
+      maxDistance: 24
+    })
+
+    if (result.canceled) {
+      return {
+        success: false,
+        reason: 'canceled'
+      }
+    }
+
+    if ((result.minedCount || 0) <= 0) {
+      return {
+        success: false,
+        reason: 'stone_gather_failed'
+      }
+    }
+
+    return {
+      success: true,
+      reason: 'gathered_stone'
+    }
+  }
+
+  return {
+    success: false,
+    reason: `cannot_auto_gather:${requirementName}`
+  }
+}
+
+async function ensureRequirementAvailable(requirementName, requiredCount, options = {}) {
+  const shouldCancel = options.shouldCancel || (() => false)
+  const announce = options.announce !== false
+  const depth = options.depth || 0
+
+  if (depth > 8) {
+    return {
+      success: false,
+      reason: 'ensure_requirement_depth_exceeded'
+    }
+  }
+
+  if (shouldCancel()) {
+    return {
+      success: false,
+      reason: 'canceled'
+    }
+  }
+
+  const onHand = getInventoryCountForRequirement(requirementName)
+  if (onHand >= requiredCount) {
+    return {
+      success: true,
+      reason: 'already_have_requirement'
+    }
+  }
+
+  if (requirementName === 'planks') {
+    const convertResult = await convertLogsToPlanksIfNeeded(requiredCount, {
+      shouldCancel,
+      announce: false
+    })
+
+    if (
+      convertResult.success &&
+      getInventoryCountForRequirement(requirementName) >= requiredCount
+    ) {
+      return {
+        success: true,
+        reason: 'converted_logs_to_planks'
+      }
+    }
+  }
+
+  const missingCount = requiredCount - getInventoryCountForRequirement(requirementName)
+  const recipeName = resolveRecipeName(requirementName)
+
+  if (recipeName) {
+    const recipe = getRecipe(recipeName)
+    const outputCount = recipe?.outputCount || 1
+    const craftTimes = Math.ceil(missingCount / outputCount)
+
+    for (let i = 0; i < craftTimes; i += 1) {
+      const desiredCount = getItemCountExact(recipeName) + 1
+
+      const craftResult = await craftRecipeByName(recipeName, {
+        shouldCancel,
+        announce,
+        depth: depth + 1,
+        targetCount: desiredCount
+      })
+
+      if (!craftResult.success) {
+        return craftResult
+      }
+    }
+
+    if (getInventoryCountForRequirement(requirementName) >= requiredCount) {
+      return {
+        success: true,
+        reason: 'crafted_requirement'
+      }
+    }
+  }
+
+  const gatherResult = await acquireLeafRequirement(requirementName, missingCount, {
+    shouldCancel,
+    announce
+  })
+
+  if (!gatherResult.success) {
+    return gatherResult
+  }
+
+  if (getInventoryCountForRequirement(requirementName) >= requiredCount) {
+    return {
+      success: true,
+      reason: 'gathered_requirement'
+    }
+  }
+
+  if (requirementName === 'planks') {
+    const convertResult = await convertLogsToPlanksIfNeeded(requiredCount, {
+      shouldCancel,
+      announce
+    })
+
+    if (
+      convertResult.success &&
+      getInventoryCountForRequirement(requirementName) >= requiredCount
+    ) {
+      return {
+        success: true,
+        reason: 'requirement_satisfied_after_gather'
+      }
+    }
+  }
+
+  const recipeNameAfterGather = resolveRecipeName(requirementName)
+  if (recipeNameAfterGather) {
+    const recipe = getRecipe(recipeNameAfterGather)
+    const outputCount = recipe?.outputCount || 1
+    const stillMissing = requiredCount - getInventoryCountForRequirement(requirementName)
+    const craftTimes = Math.ceil(stillMissing / outputCount)
+
+    for (let i = 0; i < craftTimes; i += 1) {
+      const desiredCount = getItemCountExact(recipeNameAfterGather) + 1
+
+      const craftResult = await craftRecipeByName(recipeNameAfterGather, {
+        shouldCancel,
+        announce,
+        depth: depth + 1,
+        targetCount: desiredCount
+      })
+
+      if (!craftResult.success) {
+        return craftResult
+      }
+    }
+  }
+
+  if (getInventoryCountForRequirement(requirementName) >= requiredCount) {
+    return {
+      success: true,
+      reason: 'requirement_satisfied_after_gather'
+    }
+  }
+
+  return {
+    success: false,
+    reason: `still_missing:${requirementName}`
+  }
+}
+
+async function ensureCraftingTableAccess(shouldCancel = () => false, announce = true) {
+  if (shouldCancel()) {
+    throw new Error('Craft canceled')
+  }
+
+  let tableBlock = findNearbyCraftingTable(8)
+  if (tableBlock) {
+    await moveNearBlock(tableBlock, 2)
+    return tableBlock
+  }
+
+  if (getItemCountExact('crafting_table') <= 0) {
+    const craftResult = await craftRecipeByName('crafting_table', {
+      shouldCancel,
+      announce,
+      depth: 0,
+      targetCount: 1
+    })
+
+    if (!craftResult.success) {
+      throw new Error(`Could not craft crafting table: ${craftResult.reason}`)
+    }
+  }
+
+  if (announce) {
+    bot.chat('Placing crafting table.')
+  }
+
+  tableBlock = await placeCraftingTable()
+  await moveNearBlock(tableBlock, 2)
+  return tableBlock
 }
 
 async function craftRecipeByName(recipeName, options = {}) {
   const shouldCancel = options.shouldCancel || (() => false)
   const announce = options.announce !== false
   const depth = options.depth || 0
+  const targetCount = options.targetCount || 1
 
   if (depth > 10) {
     return {
@@ -518,7 +1057,16 @@ async function craftRecipeByName(recipeName, options = {}) {
     }
   }
 
-  if (getItemCountExact(resolvedRecipeName) >= 1) {
+  if (resolvedRecipeName.endsWith('_planks')) {
+    const plankCount = getItemCountExact(resolvedRecipeName)
+    if (plankCount >= targetCount) {
+      return {
+        success: true,
+        reason: 'already_have_item',
+        craftedItem: resolvedRecipeName
+      }
+    }
+  } else if (getItemCountExact(resolvedRecipeName) >= targetCount) {
     return {
       success: true,
       reason: 'already_have_item',
@@ -528,44 +1076,18 @@ async function craftRecipeByName(recipeName, options = {}) {
 
   for (const ingredient of recipe.ingredients || []) {
     const need = ingredient.count
-    const have = getInventoryCountForRequirement(ingredient.item)
 
-    if (have >= need) {
-      continue
-    }
+    const ensureResult = await ensureRequirementAvailable(ingredient.item, need, {
+      shouldCancel,
+      announce,
+      depth: depth + 1
+    })
 
-    const dependencyRecipeName = resolveRecipeName(ingredient.item)
-
-    if (!dependencyRecipeName) {
+    if (!ensureResult.success) {
       return {
         success: false,
-        reason: `missing_material:${ingredient.item}`,
+        reason: ensureResult.reason,
         craftedItem: null
-      }
-    }
-
-    const dependencyRecipe = getRecipe(dependencyRecipeName)
-    if (!dependencyRecipe) {
-      return {
-        success: false,
-        reason: `missing_recipe_data:${dependencyRecipeName}`,
-        craftedItem: null
-      }
-    }
-
-    const dependencyOutputCount = dependencyRecipe.outputCount || 1
-    const shortage = need - have
-    const dependencyCraftCount = Math.ceil(shortage / dependencyOutputCount)
-
-    for (let i = 0; i < dependencyCraftCount; i += 1) {
-      const dependencyResult = await craftRecipeByName(dependencyRecipeName, {
-        shouldCancel,
-        announce,
-        depth: depth + 1
-      })
-
-      if (!dependencyResult.success) {
-        return dependencyResult
       }
     }
   }
@@ -631,7 +1153,8 @@ async function craftRecipeByName(recipeName, options = {}) {
 }
 
 async function tryCraftByUserRequest(requestedName, shouldCancel, announce = true) {
-  const resolvedRecipeName = resolveRecipeName(requestedName)
+  const normalizedRequestedName = applyBuiltInRecipeAliases(normalizeRecipeKey(requestedName))
+  const resolvedRecipeName = resolveRecipeName(normalizedRequestedName)
 
   if (!resolvedRecipeName) {
     const knownItems = Object.keys(getCraftingData().items)
@@ -645,26 +1168,23 @@ async function tryCraftByUserRequest(requestedName, shouldCancel, announce = tru
     }
   }
 
-  const missingLeafItems = consolidateMissingItems(
-    listMissingLeafRequirements(resolvedRecipeName, 1, [])
-  ).filter(x => x.missing > 0)
-
-  if (missingLeafItems.length > 0) {
-    const missingText = missingLeafItems
-      .map(x => `${x.item} x${x.missing}`)
-      .join(', ')
-
-    return {
-      success: false,
-      reason: 'missing_leaf_materials',
-      message: `I can read the recipe for ${resolvedRecipeName}, but I am missing: ${missingText}.`
-    }
+  if (
+    resolvedRecipeName === 'wooden_pickaxe' ||
+    resolvedRecipeName === 'wooden_axe' ||
+    resolvedRecipeName === 'wooden_shovel' ||
+    resolvedRecipeName === 'wooden_sword' ||
+    resolvedRecipeName === 'wooden_hoe' ||
+    resolvedRecipeName === 'stick' ||
+    resolvedRecipeName === 'crafting_table'
+  ) {
+    await ensurePlanks(bot, 1)
   }
 
   const result = await craftRecipeByName(resolvedRecipeName, {
     shouldCancel,
     announce,
-    depth: 0
+    depth: 0,
+    targetCount: 1
   })
 
   if (!result.success) {
@@ -680,6 +1200,59 @@ async function tryCraftByUserRequest(requestedName, shouldCancel, announce = tru
     reason: result.reason,
     message: `Craft complete: ${resolvedRecipeName}.`
   }
+}
+
+function getInventorySummary() {
+  const items = bot.inventory.items()
+
+  if (!items || items.length === 0) {
+    return 'Delta inventory is empty.'
+  }
+
+  const summary = items
+    .slice(0, 8)
+    .map(item => `${item.name} x${item.count}`)
+    .join(', ')
+
+  if (items.length > 8) {
+    return `Delta has: ${summary}, and more.`
+  }
+
+  return `Delta has: ${summary}.`
+}
+
+function getCraftSummary(recipeName) {
+  const recipe = getRecipe(recipeName)
+  if (!recipe) return null
+
+  const ingredients = (recipe.ingredients || [])
+    .map(part => `${part.item} x${part.count}`)
+    .join(', ')
+
+  return `${recipeName}: ${ingredients || 'no ingredients listed'}`
+}
+
+function getNearbyMaterialReport() {
+  const parts = []
+
+  if (hasNearbyTree(24)) {
+    parts.push('tree nearby')
+  }
+
+  if (hasNearbyStoneLike(24)) {
+    parts.push('stone nearby')
+  }
+
+  const dropCount = getNearbyDroppedItems(12).length
+  if (dropCount > 0) {
+    parts.push(`dropped items nearby x${dropCount}`)
+  }
+
+  if (parts.length === 0) {
+    return 'I do not see useful materials nearby.'
+  }
+
+  return `Nearby materials: ${parts.join(', ')}.`
 }
 
 async function askOllama(userName, userMessage) {
@@ -772,7 +1345,7 @@ async function moveNearPlayer(playerName, options = {}) {
 
 function showHelp() {
   bot.chat(
-    'Delta commands: help, follow me, come here, rally, mine stone, collect items, fight, first tool, inventory, recipe <item>, craft <item>'
+    'Delta commands: help, materials, nearby, follow me, come here, rally, mine stone, collect items, fight, first tool, inventory, recipe <item>, craft <item>'
   )
 }
 
@@ -864,7 +1437,7 @@ async function runAutonomyTick() {
     markActive('auto_mine_started')
 
     try {
-      await mineStone(bot, {
+      await mineMaterial(bot, 'stone', {
         shouldCancel: makeShouldCancel(taskToken),
         autoHarvest: true,
         announce: false,
@@ -913,6 +1486,12 @@ async function runCommandTask(mode, reason, runner) {
 async function handleCommand(username, prompt) {
   const normalized = prompt.toLowerCase().trim()
   setLeaderName(username)
+
+  if (normalized === 'materials' || normalized === 'nearby') {
+    interruptCurrentTask('materials_command')
+    bot.chat(getNearbyMaterialReport())
+    return
+  }
 
   if (normalized === 'help' || normalized === 'commands') {
     interruptCurrentTask('help_command')
@@ -1032,7 +1611,7 @@ async function handleCommand(username, prompt) {
       try {
         state.lastMineAttemptAt = Date.now()
 
-        await mineStone(bot, {
+        await mineMaterial(bot, 'stone', {
           shouldCancel,
           autoHarvest: true,
           announce: true,
@@ -1061,25 +1640,40 @@ async function handleCommand(username, prompt) {
     return
   }
 
-  if (normalized.startsWith('craft ')) {
-    const requestedItem = prompt.slice('craft '.length).trim()
+if (normalized.startsWith('craft ')) {
+  const requestedItem = prompt.slice('craft '.length).trim()
 
-    if (!requestedItem) {
-      bot.chat('Say something like: Delta craft wooden axe')
-      return
-    }
-
-    await runCommandTask('crafting', 'craft_command', async ({ shouldCancel }) => {
-      try {
-        const result = await tryCraftByUserRequest(requestedItem, shouldCancel, true)
-        bot.chat(result.message)
-      } catch (err) {
-        console.error('[Delta] Craft command error:', err)
-        bot.chat(`Delta had trouble crafting ${requestedItem}: ${err.message}`)
-      }
-    })
+  if (!requestedItem) {
+    bot.chat('Say something like: Delta craft wooden axe')
     return
   }
+
+  await runCommandTask('crafting', 'craft_command', async ({ shouldCancel }) => {
+    try {
+      const normalizedRequested = normalizeRecipeKey(requestedItem)
+
+      if (normalizedRequested === 'planks') {
+        const result = await gatherAndCraftAnyPlanks(shouldCancel, true)
+
+        if (!result.success) {
+          bot.chat(`Delta had trouble crafting planks. Reason: ${result.reason}.`)
+          return
+        }
+
+        bot.chat(`Craft complete: ${result.craftedItem}.`)
+        return
+      }
+
+      const result = await tryCraftByUserRequest(requestedItem, shouldCancel, true)
+      bot.chat(result.message)
+    } catch (err) {
+      console.error('[Delta] Craft command error:', err)
+      bot.chat(`Delta had trouble crafting ${requestedItem}: ${err.message}`)
+    }
+  })
+  return
+}
+
 
   await runCommandTask('chatting', 'chat_command', async ({ shouldCancel }) => {
     try {
@@ -1157,5 +1751,6 @@ bot.on('entityHurt', entity => {
 bot.on('error', err => console.log('[Delta] Bot error:', err))
 bot.on('end', () => console.log('[Delta] Bot disconnected'))
 bot.on('kicked', reason => console.log('[Delta] Bot kicked:', reason))
+
 ```
 
