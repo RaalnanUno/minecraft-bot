@@ -1,4 +1,6 @@
-const toolPlugin = require('mineflayer-tool').plugin
+## bots/createWorkerBot.js
+
+```js
 const fs = require('fs')
 const path = require('path')
 const mineflayer = require('mineflayer')
@@ -39,7 +41,7 @@ function isExpectedPathStopError(err) {
   )
 }
 
-async function safeGoto(bot, goal) {
+async function safeGoto(goal) {
   try {
     await bot.pathfinder.goto(goal)
     return { success: true, reason: 'ok' }
@@ -72,7 +74,6 @@ function createWorkerBot(config) {
   })
 
   bot.loadPlugin(pathfinder)
-  bot.loadPlugin(toolPlugin)
 
   const state = {
     mode: 'idle',
@@ -411,7 +412,7 @@ async function moveNearBlock(block, distance = 2) {
     distance
   )
 
-  const result = await safeGoto(bot, goal)
+  const result = await safeGoto(goal)
 
   if (!result.success) {
     throw new Error(result.reason)
@@ -1080,7 +1081,7 @@ async function moveNearBlock(block, distance = 2) {
       bot.chat(`${commandName} moving to ${playerName}.`)
     }
 
-    const gotoResult = await safeGoto(bot, goal)
+    const gotoResult = await safeGoto(goal)
 
 if (!gotoResult.success) {
   if (gotoResult.reason === 'path_stopped') {
@@ -1498,3 +1499,6 @@ if (!gotoResult.success) {
 module.exports = {
   createWorkerBot
 }
+
+```
+

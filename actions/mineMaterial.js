@@ -1,3 +1,4 @@
+const { equipBestHarvestTool } = require('../utils/equipBestTool')
 const { goals } = require('mineflayer-pathfinder')
 const { collectNearbyDrops } = require('./collectDrops')
 
@@ -141,16 +142,7 @@ async function moveNearBlock(bot, block, shouldCancel) {
   return { success: true, reason: 'ok' }
 }
 
-async function equipBestTool(bot, block) {
-  try {
-    const tool = bot.pathfinder.bestHarvestTool(block)
-    if (tool) {
-      await bot.equip(tool, 'hand')
-    }
-  } catch (err) {
-    console.log('Could not equip tool:', err.message)
-  }
-}
+
 
 async function digBlock(bot, block, materialDef, shouldCancel) {
   if (!block) return { success: false, reason: 'no_block' }
@@ -176,7 +168,7 @@ async function digBlock(bot, block, materialDef, shouldCancel) {
     return { success: false, reason: 'fresh_not_diggable' }
   }
 
-  await equipBestTool(bot, freshBlock)
+  await equipBestHarvestTool(bot, freshBlock)
 
   if (shouldCancel && shouldCancel()) {
     return { success: false, reason: 'canceled' }

@@ -16,6 +16,7 @@
   "dependencies": {
     "mineflayer": "^4.35.0",
     "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-tool": "^1.2.0",
     "ollama": "^0.6.3"
   }
 }

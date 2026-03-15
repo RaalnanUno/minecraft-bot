@@ -1,3 +1,4 @@
+const { equipBestHarvestTool } = require('../utils/equipBestTool')
 const { collectNearbyDrops } = require('./collectDrops')
 
 const DEFAULT_BLOCK_NAMES = [
